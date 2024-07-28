@@ -9,6 +9,7 @@ import sys
 import argparse
 import torch.utils.model_zoo as model_zoo
 import torch.nn.functional as F
+from pytorch_nndct.apis import torch_quantizer
 
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
@@ -102,7 +103,7 @@ if __name__ == '__main__':
     parser.add_argument('--epochs', default=7, type=int, help="Achieves a testing accuracy of 85.07% with only 7 epochs")
     parser.add_argument('--batch_size', default=4, type=int, help="Batch size of 4 is a good choice for Training")
     parser.add_argument('--lr', default=0.001, type=float, help="Initial learning rate")
-    parser.add_argument('--weights', default=None, help="The path to the saved weights")
+    parser.add_argument('--weights', default='alexnet_cifar_50.pkl', help="The path to the saved weights")
     parser.add_argument('--dataset', default='build/dataset', help="The path to the train and test datasets")
     parser.add_argument('--phase', default='calib', choices=['train', 'calib', 'test'])
     args = parser.parse_args()
@@ -116,10 +117,16 @@ if __name__ == '__main__':
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
 
+    batchsize = args.batch_size
+
+    # Override batchsize if in test mode and deployment of xmodel
+    if args.phase == 'test':
+        batchsize = 1
+
     train_data = torchvision.datasets.CIFAR10(root=args.dataset, train=True, download=True, transform=transform)
     test_dataset = torchvision.datasets.CIFAR10(root=args.dataset, train=False, download=True, transform=transform)
-    trainloader = torch.utils.data.DataLoader(train_data, batch_size=args.batch_size, shuffle=True, num_workers=0)
-    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=0)
+    trainloader = torch.utils.data.DataLoader(train_data, batch_size=batchsize, shuffle=True, num_workers=0)
+    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batchsize, shuffle=False, num_workers=0)
 
     # To use the genuine AlexNet with 1000 classes as the Network Model
     model = AlexNet(num_classes=10)
@@ -166,8 +173,10 @@ if __name__ == '__main__':
             torch.save(model.state_dict(), f'models/alexnet_cifar_{epoch+1}.pkl')    
 
         print('Training of AlexNet has been finished')
+    
+    elif args.phase == 'calib':
 
-    elif args.phase == 'test':
+        ###### Load model #######
         if args.weights is not None:
             if torch.cuda.is_available():
                 model.load_state_dict(torch.load(args.weights))
@@ -176,9 +185,52 @@ if __name__ == '__main__':
         else:
             model.load_state_dict(model_zoo.load_url(model_urls['alexnet'], 'Pretrained_weights'))
 
-        
+        ###### Quantization #######
+        quant_mode = args.phase
+        quant_model = 'build/quant_model'
+        rand_in = torch.randn([batchsize, 3, 256, 256])  # RGB 32*32 input images (CIFAR10)
+        quantizer = torch_quantizer(quant_mode, model, (rand_in), output_dir=quant_model)
+        quantized_model = quantizer.quant_model
 
-        # Testing Accuracy
+        ###### Evaluation #######
+        correct = 0
+        total = 0
+
+        quantized_model.eval()
+        with torch.no_grad():
+            for index, (data, target) in enumerate(tqdm(test_loader, desc='Data Progress')):
+                image, target = data.to(device), target.to(device)
+                outputs = quantized_model(image)
+                
+             
+
+                _, predicted = torch.max(outputs.data, 1) # To find the index of max-probability for each output in the BATCH
+                total += target.size(0)
+                correct += (predicted == target).sum().item()
+        
+        print()
+        print('Accuracy of the network on 10000 test images: %.2f %%' % (100 * correct / total))
+        print("Evaluation in " + args.phase + " finished")
+
+    elif args.phase == 'test':
+
+        ###### Load model #######
+        if args.weights is not None:
+            if torch.cuda.is_available():
+                model.load_state_dict(torch.load(args.weights))
+            else:
+                model.load_state_dict(torch.load(args.weights, map_location=torch.device('cpu')))
+        else:
+            model.load_state_dict(model_zoo.load_url(model_urls['alexnet'], 'Pretrained_weights'))
+
+        ###### Quantization #######
+        quant_mode = args.phase
+        quant_model = 'build/quant_model'
+        rand_in = torch.randn([batchsize, 3, 32, 32])  # RGB 32*32 input images (CIFAR10)
+        quantizer = torch_quantizer(quant_mode, model, (rand_in), output_dir=quant_model)
+        quantized_model = quantizer.quant_model
+
+        ###### Evaluation #######
         correct = 0
         total = 0
 
@@ -196,7 +248,8 @@ if __name__ == '__main__':
         
         print()
         print('Accuracy of the network on 10000 test images: %.2f %%' % (100 * correct / total))
-        print("Testing the model finished")
+        print("Evaluation in " + args.phase + " finished")
 
-# Train:   python3 main.py --phase train
-# Test:    python3 main.py --phase test --weights models/***.pkl
+# Train:   python3 train_test_cifar10.py --phase 'train'
+# Calib:    python3 train_test_cifar10.py --phase 'calib' --batch_size 100
+# Test:    python3 train_test_cifar10.py --phase 'test'
