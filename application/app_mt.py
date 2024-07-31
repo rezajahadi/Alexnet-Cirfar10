@@ -36,9 +36,11 @@ def preprocess_fn(image_path, fix_scale):
     return: numpy array
     '''
     image = cv2.imread(image_path)
-    image = image.reshape(224,224,3)
+    #image = image.reshape(224,224,3)
     image = image * (1/255.0) * fix_scale
     image = image.astype(np.int8)
+    # Transpose the image from (H, W, C) to (C, H, W)
+    image = np.transpose(image, (2, 0, 1))
     return image
 
 
@@ -189,7 +191,7 @@ def main():
   ap = argparse.ArgumentParser()  
   ap.add_argument('-d', '--image_dir', type=str, default='images', help='Path to folder of images. Default is images')  
   ap.add_argument('-t', '--threads',   type=int, default=1,        help='Number of threads. Default is 1')
-  ap.add_argument('-m', '--model',     type=str, default='CNN_zcu102.xmodel', help='Path of xmodel. Default is CNN_zcu102.xmodel')
+  ap.add_argument('-m', '--model',     type=str, default='CNN_KV260.xmodel', help='Path of xmodel. Default is CNN_KV260.xmodel')
   args = ap.parse_args()  
   
   print ('Command line options:')

@@ -79,7 +79,6 @@ class AlexNet(nn.Module):
         x = self.features[11](x) #relu
         x = self.features[12](x) #maxpool
      
-        
         x = self.avgpool(x)
       
         x = x.view(x.size(0), 256 * 6 * 6)    
@@ -143,11 +142,13 @@ if __name__ == '__main__':
     if args.phase == 'train':
         # Training
         EPOCHS = args.epochs
+        print("Start training")
+        start_time = time.time()
         for epoch in range(EPOCHS):
             model.train()
             running_loss = 0.0
-            start_time = time.time()
-            for i, data in enumerate(trainloader, 0):
+            # for i, data in enumerate(trainloader, 0):
+            for i, data in tqdm(enumerate(trainloader), total=len(trainloader), desc=f'Epoch {epoch+1}/{EPOCHS}', leave=True):
                 # get the inputs; data is a list of [inputs, labels]
                 inputs, labels = data[0].to(device), data[1].to(device)
 
@@ -163,39 +164,37 @@ if __name__ == '__main__':
                 # print statistics
                 running_loss += loss.item()
                 if i % 1000 == 999:    # print every 1000 mini-batches
-                    #print('[%d, %5d] loss: %.3f' % (epoch + 1, i + 1, running_loss / 1000))
-                    #print('Time:',time_taken)
+                    print('[%d, %5d] loss: %.3f' % (epoch + 1, i + 1, running_loss / 1000))
                     running_loss = 0.0
-
-                                
+            end_time = time.time()
+            execution_time = end_time - start_time
+            
             if not os.path.isdir("models"):
                 os.mkdir("models")
-            torch.save(model.state_dict(), f'models/alexnet_cifar_{epoch+1}.pkl')    
+            torch.save(model.state_dict(), f'models/alexnet_cifar_{epoch+1}_test.pkl')    
 
         print('Training of AlexNet has been finished')
+        print('Execution time for Training: {:.2f} seconds'.format(execution_time))
     
     elif args.phase == 'calib':
 
         ###### Load model #######
-        if args.weights is not None:
-            if torch.cuda.is_available():
-                model.load_state_dict(torch.load(args.weights))
-            else:
-                model.load_state_dict(torch.load(args.weights, map_location=torch.device('cpu')))
+        if torch.cuda.is_available():
+            model.load_state_dict(torch.load(args.weights))
         else:
-            model.load_state_dict(model_zoo.load_url(model_urls['alexnet'], 'Pretrained_weights'))
+            model.load_state_dict(torch.load(args.weights, map_location=torch.device('cpu')))
 
         ###### Quantization #######
         quant_mode = args.phase
         quant_model = 'build/quant_model'
-        rand_in = torch.randn([batchsize, 3, 256, 256])  # RGB 32*32 input images (CIFAR10)
+        rand_in = torch.randn([batchsize, 3, 256, 256])  # RGB 256*256 input images (CIFAR10)
         quantizer = torch_quantizer(quant_mode, model, (rand_in), output_dir=quant_model)
         quantized_model = quantizer.quant_model
 
         ###### Evaluation #######
         correct = 0
         total = 0
-
+        start_time = time.time()
         quantized_model.eval()
         with torch.no_grad():
             for index, (data, target) in enumerate(tqdm(test_loader, desc='Data Progress')):
@@ -207,46 +206,58 @@ if __name__ == '__main__':
                 _, predicted = torch.max(outputs.data, 1) # To find the index of max-probability for each output in the BATCH
                 total += target.size(0)
                 correct += (predicted == target).sum().item()
+        end_time = time.time()
+        execution_time = end_time - start_time
+
+        ###### Export Quant Config #######
+        quantizer.export_quant_config()
         
         print()
+        print('Execution time for Evaluation: {:.2f} seconds'.format(execution_time))
         print('Accuracy of the network on 10000 test images: %.2f %%' % (100 * correct / total))
         print("Evaluation in " + args.phase + " finished")
 
     elif args.phase == 'test':
 
         ###### Load model #######
-        if args.weights is not None:
-            if torch.cuda.is_available():
-                model.load_state_dict(torch.load(args.weights))
-            else:
-                model.load_state_dict(torch.load(args.weights, map_location=torch.device('cpu')))
+        if torch.cuda.is_available():
+            model.load_state_dict(torch.load(args.weights))
         else:
-            model.load_state_dict(model_zoo.load_url(model_urls['alexnet'], 'Pretrained_weights'))
+            model.load_state_dict(torch.load(args.weights, map_location=torch.device('cpu')))
+
 
         ###### Quantization #######
         quant_mode = args.phase
         quant_model = 'build/quant_model'
-        rand_in = torch.randn([batchsize, 3, 32, 32])  # RGB 32*32 input images (CIFAR10)
+        rand_in = torch.randn([batchsize, 3, 256, 256])  # RGB 256*256 input images (CIFAR10)
         quantizer = torch_quantizer(quant_mode, model, (rand_in), output_dir=quant_model)
         quantized_model = quantizer.quant_model
 
         ###### Evaluation #######
         correct = 0
         total = 0
-
-        model.eval()
+        start_time = time.time()
+        quantized_model.eval()
         with torch.no_grad():
             for index, (data, target) in enumerate(tqdm(test_loader, desc='Data Progress')):
                 image, target = data.to(device), target.to(device)
-                outputs = model(image)
+                outputs = quantized_model(image)
                 
              
 
                 _, predicted = torch.max(outputs.data, 1) # To find the index of max-probability for each output in the BATCH
                 total += target.size(0)
                 correct += (predicted == target).sum().item()
-        
+        end_time = time.time()
+        execution_time = end_time - start_time
+
+        ###### Export Xmodel #######
+        quantizer.export_torch_script()
+        quantizer.export_onnx_model()
+        quantizer.export_xmodel(deploy_check=False, output_dir=quant_model)
+
         print()
+        print('Execution time for Evaluation: {:.2f} seconds'.format(execution_time))
         print('Accuracy of the network on 10000 test images: %.2f %%' % (100 * correct / total))
         print("Evaluation in " + args.phase + " finished")
 
